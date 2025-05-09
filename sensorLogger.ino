@@ -7,15 +7,19 @@
 // Display flags
 #define DISPLAY_IMU_DATA (0)
 #define DISPLAY_UBX_DATA (1)
+#define DISPLAY_SNR_DATA (0)
+
 // Byte Conversion
 #define KILO_BYTE (1024)
 #define MEGA_BYTE (1024 * 1024)
 #define GIGA_BYTE (1024 * 1024 * 1024)
 
+// CONSTANT VALUES
 #define CONST_G (9.80665)  // gravity constant
 #define PIXEL_HEIGHT (20)
 #define PROCESS_IMU_FLAG (0)
 #define TIMEZONE_OFFSET_HRS (8)
+static const int MAX_SATELLITES = 40;
 
 // M5Stack Core S3 Pin Declaration
 #define SD_SPI_SCK_PIN (36)
@@ -25,7 +29,7 @@
 #define GNSS_MODULE_RX_PIN (18)
 #define GNSS_MODULE_TX_PIN (17)
 
-// FIle name
+// File name
 char outputFileName[255];
 unsigned int fileCounter = 0;
 
@@ -44,11 +48,26 @@ void println_log(const char *str);
 M5Canvas canvas(&CoreS3.Display);
 
 TinyGPSPlus gps;
-TinyGPSCustom GPGSV_msgnum(gps, "GPGSV", 2);
-TinyGPSCustom SNR_SAT1(gps, "GPGSV", 7);
-TinyGPSCustom SNR_SAT2(gps, "GPGSV", 7 + 1 * 4);
-TinyGPSCustom SNR_SAT3(gps, "GPGSV", 7 + 2 * 4);
-TinyGPSCustom SNR_SAT4(gps, "GPGSV", 7 + 3 * 4);
+// LBY: Addition of GPGSV
+TinyGPSCustom totalGPGSVMessages(gps, "GPGSV", 1); // $GPGSV sentence, first element
+TinyGPSCustom messageNumber(gps, "GPGSV", 2);      // $GPGSV sentence, second element
+TinyGPSCustom satsInView(gps, "GPGSV", 3);         // $GPGSV sentence, third element
+TinyGPSCustom satNumber[4]; // to be initialized later
+TinyGPSCustom elevation_deg[4];
+TinyGPSCustom azimuth_deg[4];
+TinyGPSCustom SNR_dB[4];
+// LBY: Addition of GPGSA for GNSS Fix Value
+TinyGPSCustom gpsFix(gps, "GPGSA", 2);
+
+
+typedef struct T_STRUCT_SATS
+{
+  bool active;
+  int elevation_deg;
+  int azimuth_deg;
+  int SNR_dB;
+} T_STRUCT_SATS;
+
 
 typedef struct T_IMU_DATA_STRUCT {
   float time_s;
@@ -70,17 +89,8 @@ typedef struct T_STRUCT_DATE_TIME {
 
 } T_STRUCT_DATE_TIME;
 
-typedef struct T_STRUCT_GPGSV_MSG {
-  unsigned char numMessages;
-  unsigned char messageNum;
-  unsigned char satelliteInView;
-  unsigned char satID[4];  // in NMEA there are 4 channels per message for GPGSV
-  char elevation_deg[4];
-  int azimuth_deg[4];
-  unsigned char SNR_dBHz[4];
-} T_STRUCT_GPGSV_MSG;
-
 typedef struct T_UBX_DATA_STRUCT {
+  unsigned char gnssFix; //1 = not avail, 2 = 2D , 3 = 3D
   double lat_rad;
   double lon_rad;
   float hgt_m;
@@ -88,12 +98,9 @@ typedef struct T_UBX_DATA_STRUCT {
   float gnssSpeed_ms;
   float gnssHeading_rad;
   unsigned char numsat;
-  char ss;
-  char snr;
-
 
   T_STRUCT_DATE_TIME gnssDateTime;
-  T_STRUCT_GPGSV_MSG svData;
+  T_STRUCT_SATS sat[MAX_SATELLITES];
 
 } T_UBX_DATA_STRUCT;
 
@@ -105,13 +112,7 @@ typedef struct T_NAV_SENSOR_STRUCT {
 T_NAV_SENSOR_STRUCT nav_data_struct;
 
 // GNSS Module Serial Functions
-static void smartDelay(unsigned long ms);
-static void printFloat(float val, bool valid, int len, int prec);
-static void printInt(unsigned long val, bool valid, int len);
-static void printDateTime(TinyGPSDate &d, TinyGPSTime &t);
-static void printStr(const char *str, int len);
-void printGnssModuleSerialHeader(void);
-void printGnssModuleSerialData(void);
+static void smartDelay(unsigned long ms, TinyGPSPlus* inputGps);
 void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned char rowStart, unsigned char colStart);
 void logSdCardGnssData(T_NAV_SENSOR_STRUCT *dataIn, char *fileNameInput);
 void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn);
@@ -139,12 +140,22 @@ void setup() {
   CoreS3.Display.printf("=== Ublox Data Readout ===");
   CoreS3.Display.setCursor(col, row);
   row += PIXEL_HEIGHT;  // Set the cursor.
-  CoreS3.Display.printf("Log File  : ");
+  CoreS3.Display.printf("Log File   : ");
   RowStore = row;
   ColStore = col;
 
   delay(200);          // Delay 200ms.
   CoreS3.Imu.begin();  // Init IMU.
+
+  // Init TinyGPSCustom
+  // Initialize all the uninitialized TinyGPSCustom objects
+  for (int i=0; i<4; ++i)
+  {
+    satNumber[i].begin(gps, "GPGSV", 4 + 4 * i); // offsets 4, 8, 12, 16
+    elevation_deg[i].begin(gps, "GPGSV", 5 + 4 * i); // offsets 5, 9, 13, 17
+    azimuth_deg[i].begin(  gps, "GPGSV", 6 + 4 * i); // offsets 6, 10, 14, 18
+    SNR_dB[i].begin(      gps, "GPGSV", 7 + 4 * i); // offsets 7, 11, 15, 19
+  }
 
   // Initialise Serial Monitor
   Serial.begin(115200);
@@ -199,24 +210,10 @@ void setup() {
   }
   CoreS3.Display.printf(outputFileName);
 
-  /*
-    createDir(SD, "/mydir");
-    listDir(SD, "/", 0);
-    removeDir(SD, "/mydir");
-    listDir(SD, "/", 2);
-    writeFile(SD, "/hello.txt", "Hello ");
-    appendFile(SD, "/hello.txt", "World!\n");
-    readFile(SD, "/hello.txt");
-    deleteFile(SD, "/foo.txt");
-    renameFile(SD, "/hello.txt", "/foo.txt");
-    readFile(SD, "/foo.txt");
-    testFileIO(SD, "/test.txt");
-    */
   listDir(SD, "/", 0);
-  printf_log("Total space: %lluMB\n", SD.totalBytes() / (1024 * 1024));
-  printf_log("Used space: %lluMB\n", SD.usedBytes() / (1024 * 1024));
+  printf_log("Total space: %lluMB\n", SD.totalBytes() / MEGA_BYTE);
+  printf_log("Used space: %lluMB\n", SD.usedBytes() / MEGA_BYTE);
 
-  //printGnssModuleSerialHeader();
 }
 
 void loop() {
@@ -233,18 +230,12 @@ void loop() {
   /*Print to M5Stack LCD Screen GNSS Data*/
   printData2Screen(&nav_data_struct, sdCardCapicity, RowStore, ColStore);
 
-  /*Print to serial monitor GNSS data*/
-  //printGnssModuleSerialData();
-
   /*Print GNSS Data to SD card*/
   logSdCardGnssData(&nav_data_struct, outputFileName);
 
-/*
-  printf_log("Total space: %lluMB\n", SD.totalBytes() / (1024 * 1024));
-  printf_log("Used space: %lluMB\n", SD.usedBytes() / (1024 * 1024));
-  */
 }
 
+/*LBY: takes in M5 Stack Core S3 IMU Data, converts to SI Unit and assign to data struct*/
 void assignImuDataStruct(T_NAV_SENSOR_STRUCT *dataOut) {
   auto imu_update = M5.Imu.update();
   if (imu_update) {
@@ -264,61 +255,6 @@ void assignImuDataStruct(T_NAV_SENSOR_STRUCT *dataOut) {
     dataOut->imuData.mag_uT[2] = data.mag.z;      // mag z-axis value.
 
   }
-}
-
-void printGnssModuleSerialHeader(void) {
-  Serial.println();
-  Serial.println(F(
-    "Sats HDOP  Latitude   Longitude   Fix  Date       Time     Date Alt   "
-    " Course Speed Card  Distance Course Card  Chars Sentences Checksum"));
-  Serial.println(
-    F("           (deg)      (deg)       Age                      Age  (m) "
-      "   --- from GPS ----  ---- to London  ----  RX    RX        Fail"));
-  Serial.println(F(
-    "----------------------------------------------------------------------"
-    "------------------------------------------------------------------"));
-}
-
-void printGnssModuleSerialData(void) {
-  static const double LONDON_LAT = 51.508131, LONDON_LON = -0.128002;
-
-  printInt(gps.satellites.value(), gps.satellites.isValid(), 5);
-  printFloat(gps.hdop.hdop(), gps.hdop.isValid(), 6, 1);
-  printFloat(gps.location.lat(), gps.location.isValid(), 11, 6);
-  printFloat(gps.location.lng(), gps.location.isValid(), 12, 6);
-  printInt(gps.location.age(), gps.location.isValid(), 5);
-  printDateTime(gps.date, gps.time);
-  printFloat(gps.altitude.meters(), gps.altitude.isValid(), 7, 2);
-  printFloat(gps.course.deg(), gps.course.isValid(), 7, 2);
-  printFloat(gps.speed.kmph(), gps.speed.isValid(), 6, 2);
-  printStr(
-    gps.course.isValid() ? TinyGPSPlus::cardinal(gps.course.deg()) : "*** ",
-    6);
-
-  unsigned long distanceKmToLondon =
-    (unsigned long)TinyGPSPlus::distanceBetween(
-      gps.location.lat(), gps.location.lng(), LONDON_LAT, LONDON_LON)
-    / 1000;
-  printInt(distanceKmToLondon, gps.location.isValid(), 9);
-
-  double courseToLondon = TinyGPSPlus::courseTo(
-    gps.location.lat(), gps.location.lng(), LONDON_LAT, LONDON_LON);
-
-  printFloat(courseToLondon, gps.location.isValid(), 7, 2);
-
-  const char *cardinalToLondon = TinyGPSPlus::cardinal(courseToLondon);
-
-  printStr(gps.location.isValid() ? cardinalToLondon : "*** ", 6);
-
-  printInt(gps.charsProcessed(), true, 6);
-  printInt(gps.sentencesWithFix(), true, 10);
-  printInt(gps.failedChecksum(), true, 9);
-  Serial.println();
-
-  smartDelay(1000);
-
-  if (millis() > 5000 && gps.charsProcessed() < 10)
-    Serial.println(F("No GPS data received: check wiring"));
 }
 
 void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned char rowStart, unsigned char colStart) {
@@ -356,71 +292,123 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
   ii += PIXEL_HEIGHT;
   CoreS3.Display.printf("Mz [uT]: %.3f", dataIn->imuData.mag_uT[2]);
 #endif
+
+  // SD Card Used
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
   if (SD.usedBytes() >= GIGA_BYTE) {
-    CoreS3.Display.printf("SD used    : %llu GB", SD.usedBytes() / GIGA_BYTE);
+    CoreS3.Display.printf("SD used     : %llu GB", SD.usedBytes() / GIGA_BYTE);
   } else if (SD.usedBytes() >= MEGA_BYTE) {
-    CoreS3.Display.printf("SD used    : %llu MB", SD.usedBytes() / MEGA_BYTE);
+    CoreS3.Display.printf("SD used     : %llu MB", SD.usedBytes() / MEGA_BYTE);
   } else if (SD.usedBytes() >= KILO_BYTE) {
-    CoreS3.Display.printf("SD used    : %llu kB", SD.usedBytes() / KILO_BYTE);
+    CoreS3.Display.printf("SD used     : %llu kB", SD.usedBytes() / KILO_BYTE);
   } else {
-    CoreS3.Display.printf("SD used    : %llu Bytes", SD.usedBytes());
+    CoreS3.Display.printf("SD used     : %llu Bytes", SD.usedBytes());
   }
   // SD Card Capacity
+  /*
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
   CoreS3.Display.printf("SDcard[%%]  : %.3f", sdCardCap);
+  */
 
 #if DISPLAY_UBX_DATA
-  // GNSS Valid
+  // GNSS Numsat
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Numsat     : %u", dataIn->gnssData.numsat);
-  // Date Time Data
-  /*
-  CoreS3.Display.setCursor(jj, ii);ii+=PIXEL_HEIGHT;
-  CoreS3.Display.printf("Date       : %2d/%2d/%4d", dataIn->gnssData.gnssDateTime.DAY, dataIn->gnssData.gnssDateTime.MONTH, dataIn->gnssData.gnssDateTime.YEAR);
-  CoreS3.Display.setCursor(jj, ii);ii+=PIXEL_HEIGHT;
-  CoreS3.Display.printf("GMT+%u Time : %2d:%2d:%2d", (unsigned char)TIMEZONE_OFFSET_HRS, dataIn->gnssData.gnssDateTime.HOUR, dataIn->gnssData.gnssDateTime.MINUTE, dataIn->gnssData.gnssDateTime.SECOND);
-  */
+  CoreS3.Display.printf("Numsat      : %u", dataIn->gnssData.numsat);
+  // GNSS Fix
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;
+  CoreS3.Display.printf("GNSS Fix    : %u", dataIn->gnssData.gnssFix);
+  // GNSS Valid
+  //CoreS3.Display.setCursor(jj, ii);
+  //ii += PIXEL_HEIGHT;
+  //CoreS3.Display.printf("GNSS Valid  : %u", dataIn->gnssData.valid);
   //Gnss Pos
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Lat [deg]  : %lf", dataIn->gnssData.lat_rad * RAD_TO_DEG);
+  CoreS3.Display.printf("Lat [deg]   : %lf", dataIn->gnssData.lat_rad * RAD_TO_DEG);
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Lon [deg]  : %lf", dataIn->gnssData.lon_rad * RAD_TO_DEG);
+  CoreS3.Display.printf("Lon [deg]   : %lf", dataIn->gnssData.lon_rad * RAD_TO_DEG);
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Hgt [m]    : %.5f", dataIn->gnssData.hgt_m);
-  //Gnss Vel
-  /*
-  CoreS3.Display.setCursor(jj, ii);ii+=PIXEL_HEIGHT;
-  CoreS3.Display.printf("Spd [m/s]  : %lf", dataIn->gnssData.gnssSpeed_ms);
-  CoreS3.Display.setCursor(jj, ii);ii+=PIXEL_HEIGHT;
-  CoreS3.Display.printf("Head [deg] : %lf", dataIn->gnssData.gnssHeading_rad * RAD_TO_DEG);
-*/
-  if ((SNR_SAT1.isUpdated()) && (dataIn->gnssData.numsat > 3)) {
-    CoreS3.Display.setCursor(jj, ii);
-    ii += PIXEL_HEIGHT;
-    CoreS3.Display.printf("SNR 1[dBHz]: ");
-    CoreS3.Display.printf(SNR_SAT1.value());
-    CoreS3.Display.setCursor(jj, ii);
-    ii += PIXEL_HEIGHT;
-    CoreS3.Display.printf("SNR 2[dBHz]: ");
-    CoreS3.Display.printf(SNR_SAT2.value());
-    CoreS3.Display.setCursor(jj, ii);
-    ii += PIXEL_HEIGHT;
-    CoreS3.Display.printf("SNR 3[dBHz]: ");
-    CoreS3.Display.printf(SNR_SAT3.value());
-    CoreS3.Display.setCursor(jj, ii);
-    ii += PIXEL_HEIGHT;
-    CoreS3.Display.printf("SNR 4[dBHz]: ");
-    CoreS3.Display.printf(SNR_SAT4.value());
-  }
+  CoreS3.Display.printf("Hgt [m]     : %.5f", dataIn->gnssData.hgt_m);
+
+/*LBY: Rewriting SNR_dB Display, impossible to display all SNR on small screen
+  hence, I will display top 4 SNR values*/
+  #if DISPLAY_SNR_DATA
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;
+  CoreS3.Display.printf("Sat SNR Values [dB]");
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;
+  int kk = 0;
+  // Satellite 1 to 8
+  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d", 
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB);
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;
+  // Satellite 9 to 16
+  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d", 
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB);
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;
+  // Satellite 17 to 24
+  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d", 
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB);
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;
+  // Satellite 25 to 32
+  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d", 
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB);
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;
+  // Satellite 33 to 40
+  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d", 
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB);
+  #endif
+
+                                                
 #endif
 }
+
 
 void logSdCardGnssData(T_NAV_SENSOR_STRUCT *dataIn, char *fileNameInput) {
   char text[255] = { 0 };
@@ -438,7 +426,9 @@ void logSdCardGnssData(T_NAV_SENSOR_STRUCT *dataIn, char *fileNameInput) {
   appendFile(SD, fileNameInput, text);
 }
 
+/*LBY: takes in M5 Stack GNSS Module Data and assign to NAV data struct, UBLOX default config sends out NMEA*/
 void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn) {
+  // Check NMEA GPGGA validity
   dataOut->gnssData.valid = (bool)dataIn->satellites.isValid();
   if (dataOut->gnssData.valid == 1) {
     dataOut->gnssData.numsat = (unsigned char)dataIn->satellites.value();
@@ -464,72 +454,42 @@ void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn) {
     dataOut->gnssData.gnssDateTime.YEAR = (unsigned short)dataIn->date.year();
     dataOut->gnssData.gnssDateTime.MONTH = (unsigned short)dataIn->date.month();
 
-  } else {
-    memset(dataOut, 0, sizeof(dataOut));
   }
-  smartDelay(1000);
+  // Check NMEA GPGSV validity
+  if(totalGPGSVMessages.isUpdated()){
+    for (int i=0; i<4; ++i)
+      {
+        int no = atoi(satNumber[i].value());
+        if (no >= 1 && no <= MAX_SATELLITES)
+        {
+          dataOut->gnssData.sat[no-1].elevation_deg = atoi(elevation_deg[i].value());
+          dataOut->gnssData.sat[no-1].azimuth_deg = atoi(azimuth_deg[i].value());
+          dataOut->gnssData.sat[no-1].SNR_dB = atoi(SNR_dB[i].value());
+          dataOut->gnssData.sat[no-1].active = true;
+        }
+/*
+        int totalMessages = atoi(totalGPGSVMessages.value());
+        int currentMessage = atoi(messageNumber.value());
+        if (totalMessages == currentMessage)
+        {
+          // Insert things to do here
+        }
+*/
+      }
+  }
+  if (gpsFix.isUpdated()){
+    dataOut->gnssData.gnssFix = (unsigned char)(atoi(gpsFix.value()));
+  } 
+  smartDelay(1000, dataIn);
 }
 
 // This custom version of delay() ensures that the gps object
 // is being "fed".
-static void smartDelay(unsigned long ms) {
+static void smartDelay(unsigned long ms, TinyGPSPlus* inputGps) {
   unsigned long start = millis();
   do {
-    while (Serial2.available()) gps.encode(Serial2.read());
+    while (Serial2.available()) inputGps->encode(Serial2.read());
   } while (millis() - start < ms);
-}
-
-static void printFloat(float val, bool valid, int len, int prec) {
-  if (!valid) {
-    while (len-- > 1) Serial.print('*');
-    Serial.print(' ');
-  } else {
-    Serial.print(val, prec);
-    int vi = abs((int)val);
-    int flen = prec + (val < 0.0 ? 2 : 1);  // . and -
-    flen += vi >= 1000 ? 4 : vi >= 100 ? 3
-                           : vi >= 10  ? 2
-                                       : 1;
-    for (int i = flen; i < len; ++i) Serial.print(' ');
-  }
-  smartDelay(0);
-}
-
-static void printInt(unsigned long val, bool valid, int len) {
-  char sz[32] = "*****************";
-  if (valid) sprintf(sz, "%ld", val);
-  sz[len] = 0;
-  for (int i = strlen(sz); i < len; ++i) sz[i] = ' ';
-  if (len > 0) sz[len - 1] = ' ';
-  Serial.print(sz);
-  smartDelay(0);
-}
-
-static void printDateTime(TinyGPSDate &d, TinyGPSTime &t) {
-  if (!d.isValid()) {
-    Serial.print(F("********** "));
-  } else {
-    char sz[32];
-    sprintf(sz, "%02d/%02d/%02d ", d.month(), d.day(), d.year());
-    Serial.print(sz);
-  }
-
-  if (!t.isValid()) {
-    Serial.print(F("******** "));
-  } else {
-    char sz[32];
-    sprintf(sz, "%02d:%02d:%02d ", t.hour(), t.minute(), t.second());
-    Serial.print(sz);
-  }
-
-  printInt(d.age(), d.isValid(), 5);
-  smartDelay(0);
-}
-
-static void printStr(const char *str, int len) {
-  int slen = strlen(str);
-  for (int i = 0; i < len; ++i) Serial.print(i < slen ? str[i] : ' ');
-  smartDelay(0);
 }
 
 void listDir(fs::FS &fs, const char *dirname, uint8_t levels) {
