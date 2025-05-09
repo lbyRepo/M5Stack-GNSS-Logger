@@ -7,7 +7,8 @@
 // Display flags
 #define DISPLAY_IMU_DATA (0)
 #define DISPLAY_UBX_DATA (1)
-#define DISPLAY_SNR_DATA (0)
+#define DISPLAY_SNR_DATA (1)
+#define DISPLAY_INTVL_MS (1000)
 
 // Byte Conversion
 #define KILO_BYTE (1024)
@@ -45,7 +46,10 @@ void deleteFile(fs::FS &fs, const char *path);
 void testFileIO(fs::FS &fs, const char *path);
 void printf_log(const char *format, ...);
 void println_log(const char *str);
+
+// M5 Stack Display
 M5Canvas canvas(&CoreS3.Display);
+static unsigned char m5StackPageNum = 0x00;
 
 TinyGPSPlus gps;
 // LBY: Addition of GPGSV
@@ -57,7 +61,7 @@ TinyGPSCustom elevation_deg[4];
 TinyGPSCustom azimuth_deg[4];
 TinyGPSCustom SNR_dB[4];
 // LBY: Addition of GPGSA for GNSS Fix Value
-TinyGPSCustom gpsFix(gps, "GPGSA", 2);
+//TinyGPSCustom gpsFix(gps, "GPGGA", 6); //GPGSA for GPS only constellation, GNGSA for multiconstellation, which is the default for ublox m9n
 
 
 typedef struct T_STRUCT_SATS
@@ -90,7 +94,7 @@ typedef struct T_STRUCT_DATE_TIME {
 } T_STRUCT_DATE_TIME;
 
 typedef struct T_UBX_DATA_STRUCT {
-  unsigned char gnssFix; //1 = not avail, 2 = 2D , 3 = 3D
+  //unsigned char gnssFix; //1 = not avail, 2 = 2D , 3 = 3D
   double lat_rad;
   double lon_rad;
   float hgt_m;
@@ -98,6 +102,7 @@ typedef struct T_UBX_DATA_STRUCT {
   float gnssSpeed_ms;
   float gnssHeading_rad;
   unsigned char numsat;
+  unsigned char satsInView;
 
   T_STRUCT_DATE_TIME gnssDateTime;
   T_STRUCT_SATS sat[MAX_SATELLITES];
@@ -140,7 +145,7 @@ void setup() {
   CoreS3.Display.printf("=== Ublox Data Readout ===");
   CoreS3.Display.setCursor(col, row);
   row += PIXEL_HEIGHT;  // Set the cursor.
-  CoreS3.Display.printf("Log File   : ");
+  CoreS3.Display.printf("Log File    : ");
   RowStore = row;
   ColStore = col;
 
@@ -192,7 +197,7 @@ void setup() {
 
 
   uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-  printf_log("SD Card Size: %llu MB\n", cardSize);
+  //printf_log("SD Card Size: %llu MB\n", cardSize);
 
   // List every file is in this current directory
   listDir(SD, "/", 0);
@@ -211,18 +216,28 @@ void setup() {
   CoreS3.Display.printf(outputFileName);
 
   listDir(SD, "/", 0);
-  printf_log("Total space: %lluMB\n", SD.totalBytes() / MEGA_BYTE);
-  printf_log("Used space: %lluMB\n", SD.usedBytes() / MEGA_BYTE);
+  //printf_log("Total space: %lluMB\n", SD.totalBytes() / MEGA_BYTE);
+  //printf_log("Used space: %lluMB\n", SD.usedBytes() / MEGA_BYTE);
 
 }
 
 void loop() {
+  /*SD card capacity calculation*/
   float sdCardCapicity = 0.0;
   if (sdCardFlag) {
     sdCardCapicity = 1.0 * SD.usedBytes() / SD.totalBytes();
   } else {
     sdCardCapicity = 0.0;
   }
+
+  /*Touch Screen Detection*/
+  /*
+  if (CoreS3.Display.pushState()){
+    m5StackPageNum^=0x01;
+    printf_log("Page Num: %u \n", m5StackPageNum);
+
+  }
+  */
 
   /*Data Assignment*/
   assignGnssDataStruct(&nav_data_struct, &gps);
@@ -294,6 +309,7 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
 #endif
 
   // SD Card Used
+  /*
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
   if (SD.usedBytes() >= GIGA_BYTE) {
@@ -305,27 +321,15 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
   } else {
     CoreS3.Display.printf("SD used     : %llu Bytes", SD.usedBytes());
   }
+  */
   // SD Card Capacity
   /*
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
   CoreS3.Display.printf("SDcard[%%]  : %.3f", sdCardCap);
   */
-
 #if DISPLAY_UBX_DATA
-  // GNSS Numsat
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Numsat      : %u", dataIn->gnssData.numsat);
-  // GNSS Fix
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("GNSS Fix    : %u", dataIn->gnssData.gnssFix);
-  // GNSS Valid
-  //CoreS3.Display.setCursor(jj, ii);
-  //ii += PIXEL_HEIGHT;
-  //CoreS3.Display.printf("GNSS Valid  : %u", dataIn->gnssData.valid);
-  //Gnss Pos
+  // GNSS Position
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
   CoreS3.Display.printf("Lat [deg]   : %lf", dataIn->gnssData.lat_rad * RAD_TO_DEG);
@@ -336,29 +340,36 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
   ii += PIXEL_HEIGHT;
   CoreS3.Display.printf("Hgt [m]     : %.5f", dataIn->gnssData.hgt_m);
 
+
+  // GNSS Numsat
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;
+  CoreS3.Display.printf("Numsat      : %u", dataIn->gnssData.numsat);
+  
+  // GNSS Valid
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;
+  CoreS3.Display.printf("GNSS Valid  : %u", dataIn->gnssData.valid);
+  
+  
+
+
+
+                                                
+#endif
+
 /*LBY: Rewriting SNR_dB Display, impossible to display all SNR on small screen
   hence, I will display top 4 SNR values*/
   #if DISPLAY_SNR_DATA
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Sat SNR Values [dB]");
+  CoreS3.Display.printf("==== GPS Sat SNR [dB] ====");
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
   int kk = 0;
-  // Satellite 1 to 8
-  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d", 
+  // Satellite 1 to 9
+  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
                         dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  // Satellite 9 to 16
-  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d", 
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
@@ -369,20 +380,9 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
                         dataIn->gnssData.sat[kk++].SNR_dB);
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
-  // Satellite 17 to 24
-  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d", 
+  // Satellite 10 to 18
+  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
                         dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB,
-                        dataIn->gnssData.sat[kk++].SNR_dB);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  // Satellite 25 to 32
-  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d", 
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
@@ -393,8 +393,9 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
                         dataIn->gnssData.sat[kk++].SNR_dB);
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;
-  // Satellite 33 to 40
-  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d", 
+  // Satellite 19 to 27
+  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
+                        dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
@@ -403,10 +404,24 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB);
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;
+  // Satellite 28 to 36
+  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB,
+                        dataIn->gnssData.sat[kk++].SNR_dB);
+
   #endif
 
-                                                
-#endif
+  //refresh display at 1000ms interval
+  smartDelay(DISPLAY_INTVL_MS, &gps);
 }
 
 
@@ -477,10 +492,11 @@ void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn) {
 */
       }
   }
-  if (gpsFix.isUpdated()){
-    dataOut->gnssData.gnssFix = (unsigned char)(atoi(gpsFix.value()));
-  } 
-  smartDelay(1000, dataIn);
+  if (satsInView.isUpdated()){
+    dataOut->gnssData.satsInView = atoi(satsInView.value());
+    //printf("sats in view: %u\n",dataOut->gnssData.satsInView);
+  }
+
 }
 
 // This custom version of delay() ensures that the gps object
@@ -493,56 +509,56 @@ static void smartDelay(unsigned long ms, TinyGPSPlus* inputGps) {
 }
 
 void listDir(fs::FS &fs, const char *dirname, uint8_t levels) {
-  printf_log("Listing directory: %s\n", dirname);
+  //printf_log("Listing directory: %s\n", dirname);
 
   File root = fs.open(dirname);
   if (!root) {
-    println_log("Failed to open directory");
+    //println_log("Failed to open directory");
     return;
   }
   if (!root.isDirectory()) {
-    println_log("Not a directory");
+    //println_log("Not a directory");
     return;
   }
 
   File file = root.openNextFile();
   while (file) {
     if (file.isDirectory()) {
-      Serial.print("  DIR : ");
-      println_log(file.name());
+      //Serial.print("  DIR : ");
+      //println_log(file.name());
       if (levels) {
         listDir(fs, file.path(), levels - 1);
       }
     } else {
-      Serial.print("  FILE: ");
-      Serial.print(file.name());
-      Serial.print("  SIZE: ");
-      println_log(String(file.size()).c_str());
+      //Serial.print("  FILE: ");
+      //Serial.print(file.name());
+      //Serial.print("  SIZE: ");
+      //println_log(String(file.size()).c_str());
     }
     file = root.openNextFile();
   }
 }
 
 void createDir(fs::FS &fs, const char *path) {
-  printf_log("Creating Dir: %s\n", path);
+  //printf_log("Creating Dir: %s\n", path);
   if (fs.mkdir(path)) {
-    println_log("Dir created");
+    //println_log("Dir created");
   } else {
-    println_log("mkdir failed");
+    //println_log("mkdir failed");
   }
 }
 
 void removeDir(fs::FS &fs, const char *path) {
-  printf_log("Removing Dir: %s\n", path);
+  //printf_log("Removing Dir: %s\n", path);
   if (fs.rmdir(path)) {
-    println_log("Dir removed");
+    //println_log("Dir removed");
   } else {
-    println_log("rmdir failed");
+    //println_log("rmdir failed");
   }
 }
 
 void readFile(fs::FS &fs, const char *path) {
-  printf_log("Reading file: %s\n", path);
+  //printf_log("Reading file: %s\n", path);
 
   File file = fs.open(path);
   if (!file) {
@@ -558,52 +574,52 @@ void readFile(fs::FS &fs, const char *path) {
 }
 
 void writeFile(fs::FS &fs, const char *path, const char *message) {
-  printf_log("Writing file: %s\n", path);
+  //printf_log("Writing file: %s\n", path);
 
   File file = fs.open(path, FILE_WRITE);
   if (!file) {
-    println_log("Failed to open file for writing");
+    //println_log("Failed to open file for writing");
     return;
   }
   if (file.print(message)) {
-    println_log("File written");
+    //println_log("File written");
   } else {
-    println_log("Write failed");
+    //println_log("Write failed");
   }
   file.close();
 }
 
 void appendFile(fs::FS &fs, const char *path, const char *message) {
-  printf_log("Appending to file: %s\n", path);
+  //printf_log("Appending to file: %s\n", path);
 
   File file = fs.open(path, FILE_APPEND);
   if (!file) {
-    println_log("Failed to open file for appending");
+    //println_log("Failed to open file for appending");
     return;
   }
   if (file.print(message)) {
-    println_log("Message appended");
+    //println_log("Message appended");
   } else {
-    println_log("Append failed");
+    //println_log("Append failed");
   }
   file.close();
 }
 
 void renameFile(fs::FS &fs, const char *path1, const char *path2) {
-  printf_log("Renaming file %s to %s\n", path1, path2);
+  //printf_log("Renaming file %s to %s\n", path1, path2);
   if (fs.rename(path1, path2)) {
-    println_log("File renamed");
+    //println_log("File renamed");
   } else {
-    println_log("Rename failed");
+    //println_log("Rename failed");
   }
 }
 
 void deleteFile(fs::FS &fs, const char *path) {
-  printf_log("Deleting file: %s\n", path);
+  //printf_log("Deleting file: %s\n", path);
   if (fs.remove(path)) {
-    println_log("File deleted");
+    //println_log("File deleted");
   } else {
-    println_log("Delete failed");
+    //println_log("Delete failed");
   }
 }
 
@@ -626,10 +642,10 @@ void testFileIO(fs::FS &fs, const char *path) {
       len -= toRead;
     }
     end = millis() - start;
-    printf_log("%u bytes read for %lu ms\n", flen, end);
+    //printf_log("%u bytes read for %lu ms\n", flen, end);
     file.close();
   } else {
-    println_log("Failed to open file for reading");
+    //println_log("Failed to open file for reading");
   }
 
   file = fs.open(path, FILE_WRITE);
@@ -644,7 +660,7 @@ void testFileIO(fs::FS &fs, const char *path) {
     file.write(buf, 512);
   }
   end = millis() - start;
-  printf_log("%u bytes written for %lu ms\n", 2048 * 512, end);
+  //printf_log("%u bytes written for %lu ms\n", 2048 * 512, end);
   file.close();
 }
 
