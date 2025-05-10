@@ -4,11 +4,10 @@
 #include <SPI.h>
 #include <SD.h>
 
-// Display flags
-#define DISPLAY_IMU_DATA (0)
-#define DISPLAY_UBX_DATA (1)
-#define DISPLAY_SNR_DATA (1)
-#define DISPLAY_INTVL_MS (1000)
+// Display
+#define DISPLAY_GNSS_INTERVAL_MS (1000)
+#define DISPLAY_MAX_PAGE (4)
+#define SD_CARD_LOGGING_RATE_MS (100)
 
 // Byte Conversion
 #define KILO_BYTE (1024)
@@ -18,7 +17,6 @@
 // CONSTANT VALUES
 #define CONST_G (9.80665)  // gravity constant
 #define PIXEL_HEIGHT (20)
-#define PROCESS_IMU_FLAG (0)
 #define TIMEZONE_OFFSET_HRS (8)
 static const int MAX_SATELLITES = 40;
 
@@ -49,7 +47,8 @@ void println_log(const char *str);
 
 // M5 Stack Display
 M5Canvas canvas(&CoreS3.Display);
-static unsigned char m5StackPageNum = 0x00;
+unsigned char m5StackPageNum = 1;
+static m5::touch_state_t prev_state;
 
 TinyGPSPlus gps;
 // LBY: Addition of GPGSV
@@ -60,9 +59,13 @@ TinyGPSCustom satNumber[4]; // to be initialized later
 TinyGPSCustom elevation_deg[4];
 TinyGPSCustom azimuth_deg[4];
 TinyGPSCustom SNR_dB[4];
-// LBY: Addition of GPGSA for GNSS Fix Value
-//TinyGPSCustom gpsFix(gps, "GPGGA", 6); //GPGSA for GPS only constellation, GNGSA for multiconstellation, which is the default for ublox m9n
 
+enum T_ENUM_PAGE_NUM_DISPLAY{
+  SD_CARD_CAPACITY = 1,
+  GNSS_SUMMARY = 2,
+  GPS_SNR_DISP = 3,
+  IMU_SUMMARY = 4
+};
 
 typedef struct T_STRUCT_SATS
 {
@@ -94,7 +97,6 @@ typedef struct T_STRUCT_DATE_TIME {
 } T_STRUCT_DATE_TIME;
 
 typedef struct T_UBX_DATA_STRUCT {
-  //unsigned char gnssFix; //1 = not avail, 2 = 2D , 3 = 3D
   double lat_rad;
   double lon_rad;
   float hgt_m;
@@ -118,16 +120,15 @@ T_NAV_SENSOR_STRUCT nav_data_struct;
 
 // GNSS Module Serial Functions
 static void smartDelay(unsigned long ms, TinyGPSPlus* inputGps);
-void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned char rowStart, unsigned char colStart);
+void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned char pageNum);
 void logSdCardGnssData(T_NAV_SENSOR_STRUCT *dataIn, char *fileNameInput);
 void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn);
 
 unsigned char RowStore = 0;
 unsigned char ColStore = 0;
 unsigned char sdCardFlag = 0;
-#if PROCESS_IMU_FLAG
 void assignImuDataStruct(T_NAV_SENSOR_STRUCT *dataOut);
-#endif
+
 
 void setup() {
   // Init data structure of nav sensors
@@ -140,19 +141,11 @@ void setup() {
   auto cfg = M5.config();
   CoreS3.begin(cfg);
   CoreS3.Display.setTextSize(2);  // Set text size.
-  CoreS3.Display.setCursor(col, row);
-  row += PIXEL_HEIGHT;  // Set the cursor.
-  CoreS3.Display.printf("=== Ublox Data Readout ===");
-  CoreS3.Display.setCursor(col, row);
-  row += PIXEL_HEIGHT;  // Set the cursor.
-  CoreS3.Display.printf("Log File    : ");
-  RowStore = row;
-  ColStore = col;
+  
 
   delay(200);          // Delay 200ms.
   CoreS3.Imu.begin();  // Init IMU.
 
-  // Init TinyGPSCustom
   // Initialize all the uninitialized TinyGPSCustom objects
   for (int i=0; i<4; ++i)
   {
@@ -178,7 +171,6 @@ void setup() {
   if (cardType == CARD_NONE) {
     println_log("No SD card attached");
     sdCardFlag = 0;
-    CoreS3.Display.printf("No SD");
     return;
   } else {
     sdCardFlag = 1;
@@ -197,7 +189,6 @@ void setup() {
 
 
   uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-  //printf_log("SD Card Size: %llu MB\n", cardSize);
 
   // List every file is in this current directory
   listDir(SD, "/", 0);
@@ -213,11 +204,9 @@ void setup() {
     }
     writeFile(SD, outputFileName, "pc_time,date,time,numsat,lat_deg,lon_deg,hgt_m,speed_ms,heading_deg\n");
   }
-  CoreS3.Display.printf(outputFileName);
 
+  
   listDir(SD, "/", 0);
-  //printf_log("Total space: %lluMB\n", SD.totalBytes() / MEGA_BYTE);
-  //printf_log("Used space: %lluMB\n", SD.usedBytes() / MEGA_BYTE);
 
 }
 
@@ -230,20 +219,26 @@ void loop() {
     sdCardCapicity = 0.0;
   }
 
-  /*Touch Screen Detection*/
-  /*
-  if (CoreS3.Display.pushState()){
-    m5StackPageNum^=0x01;
-    printf_log("Page Num: %u \n", m5StackPageNum);
-
+  /*Power Button Click Detection*/
+  CoreS3.update();
+  int state = CoreS3.BtnPWR.wasClicked();
+  if (state) {
+    // Clear Display
+    CoreS3.Display.fillRect(0, 0, CoreS3.Display.width(), CoreS3.Display.height(), BLACK);
+    state = 0; // reset state
+    m5StackPageNum += 1;
+    if (m5StackPageNum > DISPLAY_MAX_PAGE){
+      m5StackPageNum = 1; // wrap back to page 1
+    }
+    printf("Touch detected!!: %u\n",m5StackPageNum);
   }
-  */
 
   /*Data Assignment*/
   assignGnssDataStruct(&nav_data_struct, &gps);
+  assignImuDataStruct(&nav_data_struct);
 
   /*Print to M5Stack LCD Screen GNSS Data*/
-  printData2Screen(&nav_data_struct, sdCardCapicity, RowStore, ColStore);
+  printData2Screen(&nav_data_struct, sdCardCapicity, m5StackPageNum);
 
   /*Print GNSS Data to SD card*/
   logSdCardGnssData(&nav_data_struct, outputFileName);
@@ -272,103 +267,88 @@ void assignImuDataStruct(T_NAV_SENSOR_STRUCT *dataOut) {
   }
 }
 
-void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned char rowStart, unsigned char colStart) {
-  unsigned char jj = colStart;
-  unsigned char ii = rowStart;
-#if DISPLAY_IMU_DATA
-  // Acc
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Ax [m/s2]: %.3f", dataIn->imuData.acc_ms2[0]);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Ay [m/s2]: %.3f", dataIn->imuData.acc_ms2[1]);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Az [m/s2]: %.3f", dataIn->imuData.acc_ms2[2]);
-  //Gyr
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Gx [deg/s]: %.3f", dataIn->imuData.gyr_rads[0] * RAD_TO_DEG);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Gy [deg/s]: %.3f", dataIn->imuData.gyr_rads[1] * RAD_TO_DEG);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Gz [deg/s]: %.3f", dataIn->imuData.gyr_rads[2] * RAD_TO_DEG);
-  //Mag
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Mx [uT]: %.3f", dataIn->imuData.mag_uT[0]);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("My [uT]: %.3f", dataIn->imuData.mag_uT[1]);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Mz [uT]: %.3f", dataIn->imuData.mag_uT[2]);
-#endif
+void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned char pageNum) {
+  unsigned char jj = 1;
+  unsigned char ii = 1;
+  int kk = 0; // for SNR
 
-  // SD Card Used
-  /*
   CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  if (SD.usedBytes() >= GIGA_BYTE) {
-    CoreS3.Display.printf("SD used     : %llu GB", SD.usedBytes() / GIGA_BYTE);
-  } else if (SD.usedBytes() >= MEGA_BYTE) {
-    CoreS3.Display.printf("SD used     : %llu MB", SD.usedBytes() / MEGA_BYTE);
-  } else if (SD.usedBytes() >= KILO_BYTE) {
-    CoreS3.Display.printf("SD used     : %llu kB", SD.usedBytes() / KILO_BYTE);
-  } else {
-    CoreS3.Display.printf("SD used     : %llu Bytes", SD.usedBytes());
+  ii += PIXEL_HEIGHT;  // Set the cursor.
+  CoreS3.Display.printf("=== Ublox Data Readout ===");
+  CoreS3.Display.setCursor(jj, ii);
+  ii += PIXEL_HEIGHT;  // Set the cursor.
+  CoreS3.Display.printf("Log File    : ");
+  if (sdCardFlag){
+    CoreS3.Display.printf("No SD card");
   }
-  */
-  // SD Card Capacity
-  /*
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("SDcard[%%]  : %.3f", sdCardCap);
-  */
-#if DISPLAY_UBX_DATA
-  // GNSS Position
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Lat [deg]   : %lf", dataIn->gnssData.lat_rad * RAD_TO_DEG);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Lon [deg]   : %lf", dataIn->gnssData.lon_rad * RAD_TO_DEG);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Hgt [m]     : %.5f", dataIn->gnssData.hgt_m);
-
-
-  // GNSS Numsat
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("Numsat      : %u", dataIn->gnssData.numsat);
-  
-  // GNSS Valid
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("GNSS Valid  : %u", dataIn->gnssData.valid);
-  
+  else{
+    CoreS3.Display.printf(outputFileName);
+  }
   
 
-
-
-                                                
-#endif
-
-/*LBY: Rewriting SNR_dB Display, impossible to display all SNR on small screen
-  hence, I will display top 4 SNR values*/
-  #if DISPLAY_SNR_DATA
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  CoreS3.Display.printf("==== GPS Sat SNR [dB] ====");
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  int kk = 0;
-  // Satellite 1 to 9
-  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
+  switch (pageNum){
+    case (SD_CARD_CAPACITY):
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("==== SD Card Capacity ====");
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      if (SD.usedBytes() >= GIGA_BYTE) {
+        CoreS3.Display.printf("SD used     : %llu GB", SD.usedBytes() / GIGA_BYTE);
+      } else if (SD.usedBytes() >= MEGA_BYTE) {
+        CoreS3.Display.printf("SD used     : %llu MB", SD.usedBytes() / MEGA_BYTE);
+      } else if (SD.usedBytes() >= KILO_BYTE) {
+        CoreS3.Display.printf("SD used     : %llu kB", SD.usedBytes() / KILO_BYTE);
+      } else {
+        CoreS3.Display.printf("SD used     : %llu Bytes", SD.usedBytes());
+      }
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("SD card[%%]  : %.3f", sdCardCap);
+    break;
+    case (GNSS_SUMMARY):
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("==== GNSS UBX Summary ====");
+      // GNSS Numsat
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Numsat      : %u", dataIn->gnssData.numsat);
+  
+      // GNSS Valid
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("GNSS Valid  : %u", dataIn->gnssData.valid);
+  
+      // GNSS Position
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Lat [deg]   : %lf", dataIn->gnssData.lat_rad * RAD_TO_DEG);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Lon [deg]   : %lf", dataIn->gnssData.lon_rad * RAD_TO_DEG);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Hgt [m]     : %.f", dataIn->gnssData.hgt_m);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("GNSS Spd [m]: %.f", dataIn->gnssData.gnssSpeed_ms);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Heading[deg]: %.f", dataIn->gnssData.gnssHeading_rad * RAD_TO_DEG);
+      //refresh display at 1000ms interval
+      //smartDelay(DISPLAY_GNSS_INTERVAL_MS, &gps);
+      
+    break;
+    case (GPS_SNR_DISP):
+    /*LBY: SNR_dB Display*/  
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("==== GPS Sat SNR [dB] ====");
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      // Satellite 1 to 9
+      CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
@@ -378,10 +358,10 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  // Satellite 10 to 18
-  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      // Satellite 10 to 18
+      CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
@@ -391,10 +371,10 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  // Satellite 19 to 27
-  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      // Satellite 19 to 27
+      CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
@@ -404,10 +384,10 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB);
-  CoreS3.Display.setCursor(jj, ii);
-  ii += PIXEL_HEIGHT;
-  // Satellite 28 to 36
-  CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      // Satellite 28 to 36
+      CoreS3.Display.printf("%2d %2d %2d %2d %2d %2d %2d %2d %2d", 
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
@@ -418,10 +398,51 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB);
 
-  #endif
+      //refresh display at 1000ms interval
+      //smartDelay(DISPLAY_GNSS_INTERVAL_MS, &gps);
+    break;
+    case (IMU_SUMMARY):
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("==== M5 IMU Data Summ ====");
+    // Acc
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Ax [m/s2] : %.3f", dataIn->imuData.acc_ms2[0]);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Ay [m/s2] : %.3f", dataIn->imuData.acc_ms2[1]);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Az [m/s2] : %.3f", dataIn->imuData.acc_ms2[2]);
+      //Gyr
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Gx [deg/s]: %.3f", dataIn->imuData.gyr_rads[0] * RAD_TO_DEG);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Gy [deg/s]: %.3f", dataIn->imuData.gyr_rads[1] * RAD_TO_DEG);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Gz [deg/s]: %.3f", dataIn->imuData.gyr_rads[2] * RAD_TO_DEG);
+      //Mag
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Mx [uT]   : %.3f", dataIn->imuData.mag_uT[0]);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("My [uT]   : %.3f", dataIn->imuData.mag_uT[1]);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Mz [uT]   : %.3f", dataIn->imuData.mag_uT[2]);
+    break;
+    default:
+    break;
 
-  //refresh display at 1000ms interval
-  smartDelay(DISPLAY_INTVL_MS, &gps);
+  }
+
+  
+  
 }
 
 
@@ -482,19 +503,10 @@ void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn) {
           dataOut->gnssData.sat[no-1].SNR_dB = atoi(SNR_dB[i].value());
           dataOut->gnssData.sat[no-1].active = true;
         }
-/*
-        int totalMessages = atoi(totalGPGSVMessages.value());
-        int currentMessage = atoi(messageNumber.value());
-        if (totalMessages == currentMessage)
-        {
-          // Insert things to do here
-        }
-*/
       }
   }
   if (satsInView.isUpdated()){
     dataOut->gnssData.satsInView = atoi(satsInView.value());
-    //printf("sats in view: %u\n",dataOut->gnssData.satsInView);
   }
 
 }
