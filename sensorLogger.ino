@@ -278,7 +278,6 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;  // Set the cursor.
   CoreS3.Display.printf("=== M5 Stack Data Summ ===");
-  CoreS3.Display.printf("=== Ublox Data Readout ===");
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;  // Set the cursor.
   CoreS3.Display.printf("Log File    : ");
