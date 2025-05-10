@@ -18,7 +18,6 @@
 #define CONST_G (9.80665)  // gravity constant
 #define PIXEL_HEIGHT (20)
 #define TIMEZONE_OFFSET_HRS (8)
-static const int MAX_SATELLITES = 40;
 
 // M5Stack Core S3 Pin Declaration
 #define SD_SPI_SCK_PIN (36)
@@ -31,6 +30,8 @@ static const int MAX_SATELLITES = 40;
 // File name
 char outputFileName[255];
 unsigned int fileCounter = 0;
+
+static const int MAX_SATELLITES = 40;
 
 //SD Card Functions
 void listDir(fs::FS &fs, const char *dirname, uint8_t levels);
@@ -49,6 +50,7 @@ void println_log(const char *str);
 M5Canvas canvas(&CoreS3.Display);
 unsigned char m5StackPageNum = 1;
 static m5::touch_state_t prev_state;
+void ClearScreen();
 
 TinyGPSPlus gps;
 // LBY: Addition of GPGSV
@@ -226,8 +228,7 @@ void loop() {
   CoreS3.update();
   int state = CoreS3.BtnPWR.wasClicked();
   if (state) {
-    // Clear Display
-    CoreS3.Display.fillRect(0, 0, CoreS3.Display.width(), CoreS3.Display.height(), BLACK);
+    ClearScreen();
     state = 0; // reset state
     m5StackPageNum += 1;
     if (m5StackPageNum > DISPLAY_MAX_PAGE){
@@ -293,7 +294,7 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
     case (SD_CARD_CAPACITY):
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("==== SD Card Capacity ====");
+      CoreS3.Display.printf("=== SD Card Log Status ===");
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
       if (SD.usedBytes() >= GIGA_BYTE) {
@@ -307,7 +308,11 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
       }
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("SD card size: %llu GB", SD.cardSize() / GIGA_BYTE);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
       CoreS3.Display.printf("SD card[%%]  : %.3f", sdCardCap);
+      
     break;
     case (GNSS_SUMMARY):
       CoreS3.Display.setCursor(jj, ii);
@@ -320,12 +325,17 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
       // GNSS Numsat
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("Numsat      : %u", dataIn->gnssData.numsat);
-  
+      CoreS3.Display.printf("Numsat used : %u", dataIn->gnssData.numsat);
+      // GNSS Numsat
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Sat in view : %u", dataIn->gnssData.satsInView);
       // GNSS Valid
+      /*
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
       CoreS3.Display.printf("GNSS Valid  : %u", dataIn->gnssData.valid);
+      */
   
       // GNSS Position
       CoreS3.Display.setCursor(jj, ii);
@@ -336,13 +346,14 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
       CoreS3.Display.printf("Lon [deg]   : %lf", dataIn->gnssData.lon_deg);
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("Hgt_MSL [m] : %.f", dataIn->gnssData.hgt_msl_m);
+      CoreS3.Display.printf("Hgt_MSL [m] : %f", dataIn->gnssData.hgt_msl_m);
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("Speed [m/s] : %.f", dataIn->gnssData.gnssSpeed_ms);
+      CoreS3.Display.printf("Speed [m/s] : %f", dataIn->gnssData.gnssSpeed_ms);
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("Heading[deg]: %.f", dataIn->gnssData.gnssHeading_deg);
+      CoreS3.Display.printf("Heading[deg]: %f", dataIn->gnssData.gnssHeading_deg);
+      
       //refresh display at 1000ms interval
       smartDelay(DISPLAY_GNSS_INTERVAL_MS, &gps);
       
@@ -404,10 +415,11 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB);
-
-      //refresh display at 1000ms interval
-      smartDelay(DISPLAY_GNSS_INTERVAL_MS, &gps);
     break;
+
+    //refresh display at 1000ms interval
+    smartDelay(DISPLAY_GNSS_INTERVAL_MS, &gps);
+
     case (IMU_SUMMARY):
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
@@ -473,19 +485,9 @@ void logSdCardGnssData(T_NAV_SENSOR_STRUCT *dataIn, char *fileNameInput) {
 /*LBY: takes in M5 Stack GNSS Module Data and assign to NAV data struct, UBLOX default config sends out NMEA*/
 void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn) {
   // Check NMEA GPGGA validity
-  
-  if (dataIn->time.isUpdated() == 1) {
-    printf("GNSS Data In !!!\n");
-    dataOut->gnssData.valid = (bool)dataIn->satellites.isValid();
-    dataOut->gnssData.numsat = (unsigned char)dataIn->satellites.value();
-    dataOut->gnssData.gnssSpeed_ms = (float)dataIn->speed.mps();
-    dataOut->gnssData.gnssHeading_deg = (float)dataIn->course.deg();
-
-    dataOut->gnssData.lat_deg = (double)dataIn->location.lat();
-    dataOut->gnssData.lon_deg = (double)dataIn->location.lng();
-    dataOut->gnssData.hgt_msl_m = (float)dataIn->altitude.meters();
-
-    dataOut->gnssData.TOW = (unsigned int)(dataIn->time.value());
+  if (dataIn->time.isUpdated() && dataIn->time.isValid()) {
+    printf("time ok\n");
+    dataOut->gnssData.TOW = (unsigned int)(dataIn->time.value()/100);
 
     // Timezone compensation
     if ((dataIn->time.hour() + TIMEZONE_OFFSET_HRS) >= 24) {
@@ -501,10 +503,31 @@ void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn) {
 
     dataOut->gnssData.gnssDateTime.YEAR = (unsigned short)dataIn->date.year();
     dataOut->gnssData.gnssDateTime.MONTH = (unsigned short)dataIn->date.month();
+  }
+  if (dataIn->location.isUpdated() && dataIn->location.isValid()) {
+    printf("location ok\n");
+    dataOut->gnssData.valid = (bool)dataIn->location.isValid();
+    dataOut->gnssData.lat_deg = (double)dataIn->location.lat();
+    dataOut->gnssData.lon_deg = (double)dataIn->location.lng();
+    dataOut->gnssData.hgt_msl_m = (float)dataIn->altitude.meters();
+    
+  }
+  else{
+    printf("location updated? %u \n",dataIn->location.isUpdated());
+    printf("location valid? %u \n",dataIn->location.isValid());
 
   }
+  if (dataIn->satellites.isUpdated() && dataIn->satellites.isValid()) {
+    printf("satellites ok\n");
+    dataOut->gnssData.numsat = (unsigned char)dataIn->satellites.value();
+  }
+  if (dataIn->speed.isUpdated() && dataIn->time.isValid()) {
+    dataOut->gnssData.gnssSpeed_ms = (float)dataIn->speed.mps();
+    dataOut->gnssData.gnssHeading_deg = (float)dataIn->course.deg();
+  }
   // Check NMEA GPGSV validity
-  if(totalGPGSVMessages.isUpdated()){
+  if(totalGPGSVMessages.isUpdated() && totalGPGSVMessages.isValid()){
+    printf("GPGSV ok\n");
     for (int i=0; i<4; ++i)
       {
         int no = atoi(satNumber[i].value());
@@ -517,9 +540,13 @@ void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn) {
         }
       }
   }
-  if (satsInView.isUpdated()){
+  if (satsInView.isUpdated() && satsInView.isValid()){
     dataOut->gnssData.satsInView = atoi(satsInView.value());
   }
+
+  /*Checksum error checker*/
+  //printf("chksum error count: %u \n",dataIn->failedChecksum());
+  //printf("chksum pass count: %u \n",dataIn->passedChecksum());
 
 }
 
@@ -703,4 +730,9 @@ void println_log(const char *str) {
   Serial.println(str);
   canvas.println(str);
   canvas.pushSprite(0, 0);
+}
+
+void ClearScreen(){
+  // Clear Display
+    CoreS3.Display.fillRect(0, 0, CoreS3.Display.width(), CoreS3.Display.height(), BLACK);
 }
