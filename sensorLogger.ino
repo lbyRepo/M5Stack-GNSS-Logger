@@ -97,12 +97,15 @@ typedef struct T_STRUCT_DATE_TIME {
 } T_STRUCT_DATE_TIME;
 
 typedef struct T_UBX_DATA_STRUCT {
-  double lat_rad;
-  double lon_rad;
-  float hgt_m;
+  unsigned int TOW;
+  double lat_deg;
+  double lon_deg;
+  float hgt_msl_m;
+  //float geoid_seperation_m;
+  //float hgt_wgs84_m;
   bool valid;
   float gnssSpeed_ms;
-  float gnssHeading_rad;
+  float gnssHeading_deg;
   unsigned char numsat;
   unsigned char satsInView;
 
@@ -202,7 +205,7 @@ void setup() {
       fileCounter++;
       sprintf(outputFileName, "/log_%u.csv", fileCounter);
     }
-    writeFile(SD, outputFileName, "pc_time,date,time,numsat,lat_deg,lon_deg,hgt_m,speed_ms,heading_deg\n");
+    writeFile(SD, outputFileName, "pc_time,TOW,date,time,numsat,lat_deg,lon_deg,hgt_msl_m,speed_ms,heading_deg\n");
   }
 
   
@@ -270,19 +273,20 @@ void assignImuDataStruct(T_NAV_SENSOR_STRUCT *dataOut) {
 void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned char pageNum) {
   unsigned char jj = 1;
   unsigned char ii = 1;
-  int kk = 0; // for SNR
+  unsigned char kk = 0; // for SNR
 
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;  // Set the cursor.
+  CoreS3.Display.printf("=== M5 Stack Data Summ ===");
   CoreS3.Display.printf("=== Ublox Data Readout ===");
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;  // Set the cursor.
   CoreS3.Display.printf("Log File    : ");
   if (sdCardFlag){
-    CoreS3.Display.printf("No SD card");
+    CoreS3.Display.printf(outputFileName);
   }
   else{
-    CoreS3.Display.printf(outputFileName);
+    CoreS3.Display.printf("No SD card");
   }
   
 
@@ -310,6 +314,10 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
       CoreS3.Display.printf("==== GNSS UBX Summary ====");
+      // GNSS TOW
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Time of Week: %u", dataIn->gnssData.TOW);
       // GNSS Numsat
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
@@ -323,21 +331,21 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
       // GNSS Position
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("Lat [deg]   : %lf", dataIn->gnssData.lat_rad * RAD_TO_DEG);
+      CoreS3.Display.printf("Lat [deg]   : %lf", dataIn->gnssData.lat_deg);
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("Lon [deg]   : %lf", dataIn->gnssData.lon_rad * RAD_TO_DEG);
+      CoreS3.Display.printf("Lon [deg]   : %lf", dataIn->gnssData.lon_deg);
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("Hgt [m]     : %.f", dataIn->gnssData.hgt_m);
+      CoreS3.Display.printf("Hgt_MSL [m] : %.f", dataIn->gnssData.hgt_msl_m);
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("GNSS Spd [m]: %.f", dataIn->gnssData.gnssSpeed_ms);
+      CoreS3.Display.printf("Speed [m/s] : %.f", dataIn->gnssData.gnssSpeed_ms);
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("Heading[deg]: %.f", dataIn->gnssData.gnssHeading_rad * RAD_TO_DEG);
+      CoreS3.Display.printf("Heading[deg]: %.f", dataIn->gnssData.gnssHeading_deg);
       //refresh display at 1000ms interval
-      //smartDelay(DISPLAY_GNSS_INTERVAL_MS, &gps);
+      smartDelay(DISPLAY_GNSS_INTERVAL_MS, &gps);
       
     break;
     case (GPS_SNR_DISP):
@@ -399,7 +407,7 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
                         dataIn->gnssData.sat[kk++].SNR_dB);
 
       //refresh display at 1000ms interval
-      //smartDelay(DISPLAY_GNSS_INTERVAL_MS, &gps);
+      smartDelay(DISPLAY_GNSS_INTERVAL_MS, &gps);
     break;
     case (IMU_SUMMARY):
       CoreS3.Display.setCursor(jj, ii);
@@ -450,13 +458,14 @@ void logSdCardGnssData(T_NAV_SENSOR_STRUCT *dataIn, char *fileNameInput) {
   char text[255] = { 0 };
 
   sprintf(text,
-          "%f,%2u/%2u/%4u,%2u:%2u:%2u,%u,%lf,%lf,%f,%f,%f,\n",
+          "%f,%u,%2u/%2u/%4u,%2u:%2u:%2u,%u,%lf,%lf,%f,%f,%f,\n",
           millis() / 1000.0,
+          dataIn->gnssData.TOW,
           dataIn->gnssData.gnssDateTime.DAY, dataIn->gnssData.gnssDateTime.MONTH, dataIn->gnssData.gnssDateTime.YEAR,
           dataIn->gnssData.gnssDateTime.HOUR, dataIn->gnssData.gnssDateTime.MINUTE, dataIn->gnssData.gnssDateTime.SECOND,
           dataIn->gnssData.numsat,
-          dataIn->gnssData.lat_rad * RAD_TO_DEG, dataIn->gnssData.lon_rad * RAD_TO_DEG, dataIn->gnssData.hgt_m,
-          dataIn->gnssData.gnssSpeed_ms, dataIn->gnssData.gnssHeading_rad * RAD_TO_DEG);
+          dataIn->gnssData.lat_deg, dataIn->gnssData.lon_deg, dataIn->gnssData.hgt_msl_m,
+          dataIn->gnssData.gnssSpeed_ms, dataIn->gnssData.gnssHeading_deg);
 
   //Serial.println(text);
   appendFile(SD, fileNameInput, text);
@@ -465,15 +474,19 @@ void logSdCardGnssData(T_NAV_SENSOR_STRUCT *dataIn, char *fileNameInput) {
 /*LBY: takes in M5 Stack GNSS Module Data and assign to NAV data struct, UBLOX default config sends out NMEA*/
 void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn) {
   // Check NMEA GPGGA validity
-  dataOut->gnssData.valid = (bool)dataIn->satellites.isValid();
-  if (dataOut->gnssData.valid == 1) {
+  
+  if (dataIn->time.isUpdated() == 1) {
+    printf("GNSS Data In !!!\n");
+    dataOut->gnssData.valid = (bool)dataIn->satellites.isValid();
     dataOut->gnssData.numsat = (unsigned char)dataIn->satellites.value();
     dataOut->gnssData.gnssSpeed_ms = (float)dataIn->speed.mps();
-    dataOut->gnssData.gnssHeading_rad = (float)dataIn->course.deg() * DEG_TO_RAD;
+    dataOut->gnssData.gnssHeading_deg = (float)dataIn->course.deg();
 
-    dataOut->gnssData.lat_rad = (double)dataIn->location.lat() * DEG_TO_RAD;
-    dataOut->gnssData.lon_rad = (double)dataIn->location.lng() * DEG_TO_RAD;
-    dataOut->gnssData.hgt_m = (float)dataIn->altitude.meters();
+    dataOut->gnssData.lat_deg = (double)dataIn->location.lat();
+    dataOut->gnssData.lon_deg = (double)dataIn->location.lng();
+    dataOut->gnssData.hgt_msl_m = (float)dataIn->altitude.meters();
+
+    dataOut->gnssData.TOW = (unsigned int)(dataIn->time.value());
 
     // Timezone compensation
     if ((dataIn->time.hour() + TIMEZONE_OFFSET_HRS) >= 24) {
