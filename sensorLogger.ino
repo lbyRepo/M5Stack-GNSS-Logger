@@ -53,6 +53,7 @@ static m5::touch_state_t prev_state;
 void ClearScreen();
 
 TinyGPSPlus gps;
+//TinyGPSCustom geoidSeperation(gps, "GPGGA", 11); // Difference between ellipsoid and MSL, currently can't get this to work due to tinygpsplus library
 // LBY: Addition of GPGSV
 TinyGPSCustom totalGPGSVMessages(gps, "GPGSV", 1); // $GPGSV sentence, first element
 TinyGPSCustom messageNumber(gps, "GPGSV", 2);      // $GPGSV sentence, second element
@@ -103,8 +104,8 @@ typedef struct T_UBX_DATA_STRUCT {
   double lat_deg;
   double lon_deg;
   float hgt_msl_m;
-  //float geoid_seperation_m;
-  //float hgt_wgs84_m;
+  float geoid_seperation_m;
+  float hgt_wgs84_m;
   bool valid;
   float gnssSpeed_ms;
   float gnssHeading_deg;
@@ -207,7 +208,7 @@ void setup() {
       fileCounter++;
       sprintf(outputFileName, "/log_%u.csv", fileCounter);
     }
-    writeFile(SD, outputFileName, "pc_time,TOW,date,time,numsat,lat_deg,lon_deg,hgt_msl_m,speed_ms,heading_deg\n");
+    writeFile(SD, outputFileName, "pc_time,TOW,date,time,numsat,lat_deg,lon_deg,hgt_msl_m,hgt_wgs84_m,geoid_separation_m,speed_ms,heading_deg\n");
   }
 
   
@@ -330,12 +331,6 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
       CoreS3.Display.printf("Sat in view : %u", dataIn->gnssData.satsInView);
-      // GNSS Valid
-      /*
-      CoreS3.Display.setCursor(jj, ii);
-      ii += PIXEL_HEIGHT;
-      CoreS3.Display.printf("GNSS Valid  : %u", dataIn->gnssData.valid);
-      */
   
       // GNSS Position
       CoreS3.Display.setCursor(jj, ii);
@@ -347,6 +342,10 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
       CoreS3.Display.printf("Hgt_MSL [m] : %f", dataIn->gnssData.hgt_msl_m);
+      //CoreS3.Display.printf("Geo Sep[m]  : %f", dataIn->gnssData.geoid_seperation_m);
+      CoreS3.Display.setCursor(jj, ii);
+      ii += PIXEL_HEIGHT;
+      CoreS3.Display.printf("Hgt_WGS [m] : %f", dataIn->gnssData.hgt_wgs84_m);
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
       CoreS3.Display.printf("Speed [m/s] : %f", dataIn->gnssData.gnssSpeed_ms);
@@ -469,13 +468,13 @@ void logSdCardGnssData(T_NAV_SENSOR_STRUCT *dataIn, char *fileNameInput) {
   char text[255] = { 0 };
 
   sprintf(text,
-          "%f,%u,%2u/%2u/%4u,%2u:%2u:%2u,%u,%lf,%lf,%f,%f,%f,\n",
+          "%f,%u,%2u/%2u/%4u,%2u:%2u:%2u,%u,%lf,%lf,%f,%f,%f,%f,%f,\n",
           millis() / 1000.0,
           dataIn->gnssData.TOW,
           dataIn->gnssData.gnssDateTime.DAY, dataIn->gnssData.gnssDateTime.MONTH, dataIn->gnssData.gnssDateTime.YEAR,
           dataIn->gnssData.gnssDateTime.HOUR, dataIn->gnssData.gnssDateTime.MINUTE, dataIn->gnssData.gnssDateTime.SECOND,
           dataIn->gnssData.numsat,
-          dataIn->gnssData.lat_deg, dataIn->gnssData.lon_deg, dataIn->gnssData.hgt_msl_m,
+          dataIn->gnssData.lat_deg, dataIn->gnssData.lon_deg, dataIn->gnssData.hgt_msl_m,dataIn->gnssData.hgt_wgs84_m,dataIn->gnssData.geoid_seperation_m,
           dataIn->gnssData.gnssSpeed_ms, dataIn->gnssData.gnssHeading_deg);
 
   //Serial.println(text);
@@ -542,6 +541,12 @@ void assignGnssDataStruct(T_NAV_SENSOR_STRUCT *dataOut, TinyGPSPlus *dataIn) {
   }
   if (satsInView.isUpdated() && satsInView.isValid()){
     dataOut->gnssData.satsInView = atoi(satsInView.value());
+  }
+  
+  if (dataIn->geoid.isValid() && dataIn->geoid.isUpdated()){
+    dataOut->gnssData.geoid_seperation_m = dataIn->geoid.geoid_height_meters();
+    //printf("Geoid Seperation [m]: %f", dataOut->gnssData.geoid_seperation_m);
+    dataOut->gnssData.hgt_wgs84_m = dataOut->gnssData.hgt_msl_m + dataOut->gnssData.geoid_seperation_m; 
   }
 
   /*Checksum error checker*/
