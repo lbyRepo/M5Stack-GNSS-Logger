@@ -8,6 +8,7 @@
 #define DISPLAY_GNSS_INTERVAL_MS (1000)
 #define DISPLAY_MAX_PAGE (4)
 #define SD_CARD_LOGGING_RATE_MS (100)
+#define MAX_SNR_DISPLAY (9)
 
 // Byte Conversion
 #define KILO_BYTE (1024)
@@ -276,6 +277,8 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
   unsigned char jj = 1;
   unsigned char ii = 1;
   unsigned char kk = 0; // for SNR
+  unsigned char COUNTER_SNR_DISPLAY = 0;
+  unsigned char ii_store_snr = 1;
 
   CoreS3.Display.setCursor(jj, ii);
   ii += PIXEL_HEIGHT;  // Set the cursor.
@@ -362,6 +365,7 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
       CoreS3.Display.printf("==== GPS Sat SNR [dB] ====");
+      /*
       CoreS3.Display.setCursor(jj, ii);
       ii += PIXEL_HEIGHT;
       // Satellite 1 to 9
@@ -414,10 +418,36 @@ void printData2Screen(T_NAV_SENSOR_STRUCT *dataIn, float sdCardCap, unsigned cha
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB,
                         dataIn->gnssData.sat[kk++].SNR_dB);
-    break;
+      */
+
+      // LBY: Reriting SNR Display to display only active satellites
+      // Loop through up till max satellites
+      ii_store_snr = ii;
+      for (kk=0;kk<MAX_SATELLITES;kk++){
+        //if ((dataIn->gnssData.sat[kk].active)){
+        if ((dataIn->gnssData.sat[kk].active)&&(dataIn->gnssData.sat[kk].SNR_dB>0)){
+          if (COUNTER_SNR_DISPLAY<MAX_SNR_DISPLAY){
+            CoreS3.Display.setCursor(jj, ii);
+            ii += PIXEL_HEIGHT;
+          }
+          // If display row reached max and still got more SNR data, then display on 2nd column
+          else{
+            COUNTER_SNR_DISPLAY = 0;
+            jj += CoreS3.Display.width()/2;
+            ii = ii_store_snr;
+            CoreS3.Display.setCursor(jj, ii);
+            ii += PIXEL_HEIGHT;
+          }
+          CoreS3.Display.printf("SV %2u: %u",kk+1,dataIn->gnssData.sat[kk].SNR_dB);
+          
+          COUNTER_SNR_DISPLAY++;
+        }
+      }
+    
 
     //refresh display at 1000ms interval
     smartDelay(DISPLAY_GNSS_INTERVAL_MS, &gps);
+    break;
 
     case (IMU_SUMMARY):
       CoreS3.Display.setCursor(jj, ii);
