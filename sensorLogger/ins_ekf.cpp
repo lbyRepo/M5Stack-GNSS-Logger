@@ -442,7 +442,14 @@ void propagateCovariance(const Nominal& n, float dt) {
   skew(wIn, Sw);
   skew(wCor, Sc);
 
-  float F[NS][NS];
+  // Scratch is file-scope, not stack. A 15x15 float matrix is 900 bytes and
+  // this function needs three of them; with the callers on top that would put
+  // several kilobytes on the insTask stack on every 10 ms step. These
+  // functions are only ever called from insTask, so the resulting lack of
+  // re-entrancy is intentional.
+  static float F[NS][NS];
+  static float FP[NS][NS];
+  static float FPt[NS][NS];
   memset(F, 0, sizeof(F));
   for (int i = 0; i < NS; ++i) F[i][i] = 1.0f;
 
@@ -462,7 +469,6 @@ void propagateCovariance(const Nominal& n, float dt) {
     }
   }
 
-  float FP[NS][NS], FPt[NS][NS];
   mulNN(F, s_P, FP);
   mulNBt(FP, F, FPt);
 
@@ -483,9 +489,21 @@ void propagateCovariance(const Nominal& n, float dt) {
 
 // Generic measurement update, Joseph form. Returns false when the innovation
 // is gated out or the innovation covariance is not positive definite.
+//
+// As in propagateCovariance, the scratch buffers are file-scope rather than
+// stack: this function needs roughly 4.5 kB of them, which would otherwise
+// dominate the insTask stack. Only insTask calls it.
 bool applyUpdate(Nominal& n, const float H[MAXM][NS], const float z[MAXM],
                  const float R[MAXM][MAXM], int m) {
-  float PHt[NS][MAXM];
+  static float PHt[NS][MAXM];
+  static float S[MAXM][MAXM];
+  static float Sinv[MAXM][MAXM];
+  static float K[NS][MAXM];
+  static float dx[NS];
+  static float A[NS][NS];
+  static float AP[NS][NS];
+  static float APA[NS][NS];
+
   for (int i = 0; i < NS; ++i) {
     for (int j = 0; j < m; ++j) {
       float s = 0.0f;
@@ -494,7 +512,6 @@ bool applyUpdate(Nominal& n, const float H[MAXM][NS], const float z[MAXM],
     }
   }
 
-  float S[MAXM][MAXM];
   for (int i = 0; i < m; ++i) {
     for (int j = 0; j < m; ++j) {
       float s = 0.0f;
@@ -503,7 +520,6 @@ bool applyUpdate(Nominal& n, const float H[MAXM][NS], const float z[MAXM],
     }
   }
 
-  float Sinv[MAXM][MAXM];
   if (!invertSPD(S, m, Sinv)) return false;
 
   // Innovation gate: z^T S^-1 z, scaled by the number of measurements.
@@ -515,7 +531,6 @@ bool applyUpdate(Nominal& n, const float H[MAXM][NS], const float z[MAXM],
   }
   if (!(chi2 < CHI2_GATE * (float)m)) return false;
 
-  float K[NS][MAXM];
   for (int i = 0; i < NS; ++i) {
     for (int j = 0; j < m; ++j) {
       float s = 0.0f;
@@ -524,7 +539,6 @@ bool applyUpdate(Nominal& n, const float H[MAXM][NS], const float z[MAXM],
     }
   }
 
-  float dx[NS];
   for (int i = 0; i < NS; ++i) {
     float s = 0.0f;
     for (int j = 0; j < m; ++j) s += K[i][j] * z[j];
@@ -532,7 +546,6 @@ bool applyUpdate(Nominal& n, const float H[MAXM][NS], const float z[MAXM],
   }
 
   // P = (I-KH) P (I-KH)^T + K R K^T
-  float A[NS][NS];
   for (int i = 0; i < NS; ++i) {
     for (int j = 0; j < NS; ++j) {
       float s = 0.0f;
@@ -540,7 +553,6 @@ bool applyUpdate(Nominal& n, const float H[MAXM][NS], const float z[MAXM],
       A[i][j] = (i == j ? 1.0f : 0.0f) - s;
     }
   }
-  float AP[NS][NS], APA[NS][NS];
   mulNN(A, s_P, AP);
   mulNBt(AP, A, APA);
 
