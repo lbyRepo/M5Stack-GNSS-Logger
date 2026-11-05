@@ -931,6 +931,19 @@ static void drawPageSdCard() {
   y += PIXEL_HEIGHT;
 
   drawLine(LEFT_X, y, "SD card [%%] : %.1f %%", sdCardRatio * 100.0f);
+  y += PIXEL_HEIGHT;
+
+  // Battery telemetry. The CoreS3's AXP2101 (rails, charger, and the SY7088
+  // boost enable via the AW9523 expander) is configured entirely by this
+  // firmware, so a sane reading here also confirms the PMU was initialised -
+  // and a dead reading points at the battery or its connector instead.
+  drawLine(LEFT_X, y, "Batt [V]    : %.2f",
+           M5.Power.getBatteryVoltage() / 1000.0f);
+  y += PIXEL_HEIGHT;
+  drawLine(LEFT_X, y, "Batt [%%]    : %d", (int)M5.Power.getBatteryLevel());
+  y += PIXEL_HEIGHT;
+  drawLine(LEFT_X, y, "Charging    : %s",
+           ((int)M5.Power.isCharging() == 1) ? "yes" : "no");
 }
 
 // Page 2: the 15 INS states. Two columns of 13 characters at text size 2 fit
@@ -1390,7 +1403,7 @@ static void printTelemetry(const AppSnapshot &s) {
       "stk imu=%u ins=%u gnss=%u ui=%u log=%u | "
       "mode=%u zupt=%u mag=%u dt=%.1fms rej=%u | "
       "lat=%.6f lon=%.6f h=%.1f vN=%.2f vE=%.2f vD=%.2f "
-      "rpy=%.1f/%.1f/%.1f\n",
+      "rpy=%.1f/%.1f/%.1f | bat=%.2fV %d%% chg=%d\n",
       (unsigned)s.imu_hz, (unsigned)s.ins_hz, (unsigned)s.gnss_hz,
       (unsigned)s.log_rows, (unsigned)s.log_errors,
       (unsigned)s.gnss_sentences, (unsigned)s.gnss_bad_checksum,
@@ -1398,7 +1411,9 @@ static void printTelemetry(const AppSnapshot &s) {
       (unsigned)s.ui_stack, (unsigned)s.log_stack,
       (unsigned)o.mode, o.zupt_active ? 1u : 0u, o.mag_active ? 1u : 0u,
       o.dt_ms, (unsigned)o.gnss_rejected, o.lat_deg, o.lon_deg, o.h_m, o.vn,
-      o.ve, o.vd, o.roll_deg, o.pitch_deg, o.yaw_deg);
+      o.ve, o.vd, o.roll_deg, o.pitch_deg, o.yaw_deg,
+      M5.Power.getBatteryVoltage() / 1000.0f, (int)M5.Power.getBatteryLevel(),
+      (int)M5.Power.isCharging());
 }
 
 static void uiTask(void *arg) {
