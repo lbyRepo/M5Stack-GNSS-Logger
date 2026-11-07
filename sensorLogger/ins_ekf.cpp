@@ -389,7 +389,7 @@ bool s_haveGnssSpeed = false;
 bool s_velocityInit = false;
 
 // Magnetometer.
-MagSample s_mag;
+MagSample s_mag;  // Stored in body FRD after updateMag applies the input mapping.
 float s_magNormEstimate = 0.0f;
 bool s_magNormValid = false;
 
@@ -1009,6 +1009,11 @@ void updateGnss(const GnssFix& fix) {
 
 void updateMag(const MagSample& sample) {
   s_mag = sample;
+  for (int i = 0; i < 3; ++i) {
+    s_mag.m[i] = IMU_TO_BODY[i][0] * sample.m[0] +
+                 IMU_TO_BODY[i][1] * sample.m[1] +
+                 IMU_TO_BODY[i][2] * sample.m[2];
+  }
   if (!sample.valid) s_magNormValid = false;
 }
 

@@ -55,8 +55,11 @@ constexpr float GNSS_LATENCY_MS = 150.0f;
 // Positive east. Set for your location; a wrong value biases yaw directly.
 constexpr float MAG_DECLINATION_DEG = 0.0f;
 
-// Maps the IMU's own axes onto the INS body frame (FRD). Identity means the
-// IMU frame already IS the body frame.
+// Maps M5Unified output axes onto the INS body frame (FRD), for accel, gyro
+// and magnetometer. Mounting: screen up, DC-input side toward the wearer,
+// with forward pointing away from the DC-input side. M5Unified +X is right,
+// +Y is forward, +Z is up: body (F, R, D) = (Y, X, -Z).
+// Change this rotation if the device is strapped down in another orientation.
 //
 // VERIFY THIS ON HARDWARE. Lay the device flat and level: the INS expects the
 // accelerometer to read approximately (0, 0, -g) in body FRD, because a
@@ -66,12 +69,13 @@ constexpr float MAG_DECLINATION_DEG = 0.0f;
 // alignment means are published in Output::align_acc_mean so this can be
 // checked from the serial console.
 constexpr float IMU_TO_BODY[3][3] = {
-    {1.0f, 0.0f, 0.0f},
-    {0.0f, 1.0f, 0.0f},
-    {0.0f, 0.0f, 1.0f},
+  {0.0f, 1.0f,  0.0f},
+  {1.0f, 0.0f,  0.0f},
+  {0.0f, 0.0f, -1.0f},
 };
 
-// Hard-iron offset applied to the raw magnetometer sample, in microtesla.
+// Hard-iron offset in body FRD, in microtesla, subtracted after axis mapping.
+// Rotate these offsets too if the mounting changes.
 // Zero means "uncalibrated": heading aiding will then be biased but bounded.
 constexpr float MAG_HARD_IRON_UT[3] = {0.0f, 0.0f, 0.0f};
 
@@ -121,8 +125,8 @@ enum class Mode : uint8_t {
 
 struct ImuSample {
   uint32_t t_us;
-  float acc[3];   // m/s^2, FRD, includes gravity (specific force)
-  float gyro[3];  // rad/s, FRD
+  float acc[3];   // m/s^2, M5Unified axes, specific force (not gravity-removed)
+  float gyro[3];  // rad/s, M5Unified axes; updateImu maps both vectors to FRD
 };
 
 struct GnssFix {
@@ -137,7 +141,7 @@ struct GnssFix {
 
 struct MagSample {
   uint32_t t_ms;
-  float m[3];        // microtesla, FRD
+  float m[3];        // microtesla, M5Unified axes; updateMag maps to FRD
   bool valid;
 };
 

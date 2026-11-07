@@ -209,6 +209,8 @@ ALIGN acc=(...) gyro=(...)
 
 ## First run
 
+Before powering on, check that the configured [mounting and axis mapping](#mounting-and-axis-mapping) matches how the CoreS3 is strapped down.
+
 1. Insert a FAT32-formatted microSD card.
 2. Connect the GNSS antenna and place the logger outdoors with a clear view of the sky.
 3. Power on and **keep the device still**.
@@ -282,13 +284,45 @@ If you change the CSV columns, update **both** `CSV_HEADER` and the `printf` in 
 | Constant | Default | Purpose |
 |---|---|---|
 | `MAG_DECLINATION_DEG` | `0.0` | Magnetic declination for true heading; set for your location |
-| `MAG_HARD_IRON_UT` | `{0,0,0}` | Magnetometer hard-iron offsets |
-| `IMU_TO_BODY` | identity | IMU axis-to-body-frame mapping — **verify on hardware** |
+| `MAG_HARD_IRON_UT` | `{0,0,0}` | Magnetometer hard-iron offsets in body FRD, applied after mapping |
+| `IMU_TO_BODY` | `(Y, X, -Z)` | M5Unified-to-body rotation for the mounting below — **verify on hardware** |
 | `ZUPT_ENABLE` | `true` | Zero-velocity updates while stationary |
 | `MAG_AIDING_ENABLE` | `true` | Magnetometer heading updates while stationary |
 | `GNSS_LATENCY_MS` | `150` | Assumed GNSS latency used by the filter |
 
-**Before relying on INS heading**, check the `ALIGN acc=(...)` line on the serial console. With the device flat and level, the accelerometer should read approximately `(0, 0, -9.81)` in body axes. If it does not, correct `IMU_TO_BODY` in `ins_ekf.h`. A wrong mapping or declination will bias the INS solution.
+### Mounting and axis mapping
+
+**The INS axis mapping depends on how the CoreS3 is strapped down.** The default assumes the **screen faces up and the DC-input side faces the wearer**, with forward travel pointing away from that side. The DC-input connector, not USB-C, identifies the rear for this mounting.
+
+The filter uses a right-handed **FRD body frame: X forward, Y right, Z down**. In the default mounting, M5Unified reports X to the wearer's right, Y forward, and Z upward out of the screen, so the conversion is:
+
+| INS body component | M5Unified component |
+|---|---|
+| X / forward | +Y |
+| Y / right | +X |
+| Z / down | -Z |
+
+Configure this rotation with `IMU_TO_BODY` in [`sensorLogger/ins_ekf.h`](sensorLogger/ins_ekf.h):
+
+```cpp
+constexpr float IMU_TO_BODY[3][3] = {
+  {0.0f, 1.0f,  0.0f},
+  {1.0f, 0.0f,  0.0f},
+  {0.0f, 0.0f, -1.0f},
+};
+```
+
+Each row selects the sensor components for forward, right and down respectively. If you rotate the device, mount it vertically, or strap it to a different surface, update this matrix and rebuild. Use an orthonormal rotation with determinant +1; flipping only one axis creates a reflection. For example, **screen up with USB-C toward the wearer** instead requires `(X, -Y, -Z)`. An oblique mounting requires a measured rotation rather than only axis swaps and sign changes. Screen/display rotation does not change the IMU mounting.
+
+`updateImu()` applies the rotation to accelerometer and gyro inputs, and `updateMag()` applies it to magnetometer inputs. Pass M5Unified-frame vectors into these APIs; do not pre-rotate them again. M5Unified already corrects the BMM150 chip orientation. `MAG_HARD_IRON_UT` is expressed in the resulting body frame, so rotate any calibrated offsets when changing the mounting. Page 5 and the original sensor CSV columns retain M5Unified axes; INS attitude and biases use the mapped body frame.
+
+Verify on hardware before relying on the INS:
+
+- With the default mounting level and stationary, page 5 should show acceleration near `(0, 0, +9.8)` m/s². The mapped serial `ALIGN acc=(...)` should show approximately `(0, 0, -9.8)`, and INS roll/pitch should be near zero.
+- Raise the edge opposite the DC input: sensor Y acceleration should become positive. Raise the right edge: sensor X should become positive. These checks distinguish the horizontal axes, which a level test cannot do.
+- Turn right while level: sensor gyro Z should be negative, corresponding to positive body yaw rate. Use timestamped readings to check rotations; the display refresh is slow.
+
+Keep the device fixed relative to the intended body frame. If it swings or rotates independently while walking, its forward axis no longer necessarily follows your direction of travel. A correct mapping is necessary for navigation but does not replace magnetometer calibration or a correct declination setting.
 
 ## Repository layout
 

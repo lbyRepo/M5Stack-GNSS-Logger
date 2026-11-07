@@ -58,7 +58,8 @@ static const double TEST_HGT = 50.0;     // m
 
 // Specific force for a device held at (roll, pitch) with no linear motion.
 // At rest the accelerometer measures specific force, which points up, so a
-// level device reads (0, 0, -g) in body FRD.
+// level device reads (0, 0, -g) in body FRD. Return M5Unified-frame samples
+// for the screen-up, DC-side-toward-wearer mounting; gyroBias is body FRD.
 static void makeStaticSample(float roll, float pitch, const float gyroBias[3],
                              uint32_t t_us, ins::ImuSample& s) {
   float q[4];
@@ -68,11 +69,19 @@ static void makeStaticSample(float roll, float pitch, const float gyroBias[3],
 
   const float g = ins::normalGravity(TEST_LAT, TEST_HGT);
   const float fn[3] = {0.0f, 0.0f, -g};
+  float bodyAcc[3];
   for (int i = 0; i < 3; ++i) {
     // Row i of C_n^b is column i of C_b^n.
-    s.acc[i] = C[0][i] * fn[0] + C[1][i] * fn[1] + C[2][i] * fn[2];
-    s.gyro[i] = gyroBias[i];
+    bodyAcc[i] = C[0][i] * fn[0] + C[1][i] * fn[1] + C[2][i] * fn[2];
   }
+  // Physical inverse mapping, independent of the production matrix so an
+  // incorrect matrix cannot cancel itself out in these tests.
+  s.acc[0] = bodyAcc[1];
+  s.acc[1] = bodyAcc[0];
+  s.acc[2] = -bodyAcc[2];
+  s.gyro[0] = gyroBias[1];
+  s.gyro[1] = gyroBias[0];
+  s.gyro[2] = -gyroBias[2];
   s.t_us = t_us;
 }
 
@@ -118,6 +127,43 @@ static void alignAt(float roll, float pitch, const float gyroBias[3],
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+static void testMountingAxes() {
+  printf("CoreS3 mounting (screen up, DC side toward wearer)\n");
+
+  ins::ImuSample sample = {};
+  sample.acc[0] = 1.0f;  // sensor right
+  sample.acc[1] = 2.0f;  // sensor forward
+  sample.acc[2] = 3.0f;  // sensor up
+  sample.gyro[0] = 0.1f;
+  sample.gyro[1] = 0.2f;
+  sample.gyro[2] = -0.3f;  // clockwise right turn
+  ins::ImuSampleMs body = {};
+  ins::applyImuAxisMapping(sample, body);
+  checkNear(body.acc[0], 2.0, 1e-6, "sensor Y accelerates body forward");
+  checkNear(body.acc[1], 1.0, 1e-6, "sensor X accelerates body right");
+  checkNear(body.acc[2], -3.0, 1e-6, "sensor Z opposes body down");
+  checkNear(body.gyro[0], 0.2, 1e-6, "sensor Y gyro maps to roll");
+  checkNear(body.gyro[1], 0.1, 1e-6, "sensor X gyro maps to pitch");
+  checkNear(body.gyro[2], 0.3, 1e-6, "right turn has positive body yaw rate");
+
+  ins::reset();
+  ins::MagSample mag = {};
+  mag.t_ms = 1234u;
+  mag.valid = true;
+  mag.m[0] = 10.0f;
+  mag.m[1] = 20.0f;
+  mag.m[2] = 30.0f;
+  ins::updateMag(mag);
+  checkNear(ins::s_mag.m[0], 20.0, 1e-6, "magnetic forward uses sensor Y");
+  checkNear(ins::s_mag.m[1], 10.0, 1e-6, "magnetic right uses sensor X");
+  checkNear(ins::s_mag.m[2], -30.0, 1e-6, "magnetic down uses negative sensor Z");
+  check(ins::s_mag.valid && ins::s_mag.t_ms == mag.t_ms,
+        "mag mapping preserves validity and timestamp");
+  mag.valid = false;
+  ins::updateMag(mag);
+  check(!ins::s_mag.valid, "mag mapping preserves invalid samples");
+}
 
 static void testQuaternions() {
   printf("quaternions\n");
@@ -434,6 +480,7 @@ static void testAttitudeObservability() {
 
 int main() {
   printf("=== INS / EKF host tests ===\n\n");
+  testMountingAxes();
   testQuaternions();
   testGeodesy();
   testAttitudeObservability();
